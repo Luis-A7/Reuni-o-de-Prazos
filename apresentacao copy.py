@@ -425,9 +425,9 @@ with tab_tabelas:
                 "Projetado %": st.column_config.NumberColumn(format="%.0f%%"),
                 "Fabricado %": st.column_config.NumberColumn(format="%.0f%%"),
                 "Montado %": st.column_config.NumberColumn(format="%.0f%%"),
-                "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200), # Aumentei max para permitir gordura
-                "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
-                "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
+                "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100), # Aumentei max para permitir gordura
+                "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100),
+                "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100),
                 "Volume_Projetado": None, "Volume_Fabricado": None, "Volume_Montado": None, "Orcamento": None, "Orcamento Lajes": None, "Semana": None
             }
         )
