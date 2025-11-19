@@ -293,6 +293,7 @@ weeks_to_add = 10
 for obra in obras_selecionadas:
     obra_df = df_para_cumsum[df_para_cumsum['Obra'] == obra]
     if not obra_df.empty:
+        # --- LÓGICA ANTERIOR (10 semanas ANTES) ---
         min_obra_date = obra_df['Semana'].min()
         current_date = min_obra_date
         for _ in range(weeks_to_add):
@@ -302,16 +303,32 @@ for obra in obras_selecionadas:
                 'Semana': current_date,
                 'Volume_Projetado': 0, 'Volume_Fabricado': 0, 'Volume_Montado': 0
             })
+            
+        # --- NOVA LÓGICA (10 semanas DEPOIS) ---
+        max_obra_date = obra_df['Semana'].max()
+        current_date_future = max_obra_date
+        for _ in range(weeks_to_add):
+            current_date_future = current_date_future + pd.Timedelta(days=7)
+            zero_rows.append({
+                'Obra': obra,
+                'Semana': current_date_future,
+                'Volume_Projetado': 0, 'Volume_Fabricado': 0, 'Volume_Montado': 0
+            })
 
 if zero_rows:
     df_zero = pd.DataFrame(zero_rows)
+    # Concatena os dados originais com as semanas antes e depois
     df_para_cumsum = pd.concat([df_zero, df_para_cumsum], ignore_index=True)
 
+# Ordena para garantir que o CUMSUM funcione na ordem cronológica correta
 df_para_cumsum = df_para_cumsum.sort_values(["Obra", "Semana"]) 
+
+# Calcula o acumulado (as semanas futuras terão o mesmo valor da última semana real)
 df_para_cumsum["Volume_Projetado"] = df_para_cumsum.groupby("Obra")["Volume_Projetado"].cumsum()
 df_para_cumsum["Volume_Fabricado"] = df_para_cumsum.groupby("Obra")["Volume_Fabricado"].cumsum()
 df_para_cumsum["Volume_Montado"] = df_para_cumsum.groupby("Obra")["Volume_Montado"].cumsum()
 
+# Aplica o filtro de data selecionado pelo usuário
 df = df_para_cumsum[
     (df_para_cumsum["Semana"] >= data_inicio) & 
     (df_para_cumsum["Semana"] <= data_fim)
@@ -329,7 +346,7 @@ tab_cadastro, tab_tabelas, tab_graficos, tab_geral, tab_planejador = st.tabs([
     "📊 Tabelas", 
     "📈 Gráficos",
     "🌍 Tabela Geral",
-    "📅 Planejador (em construção)"
+    "📅 Planejador"
 ])
 
 # --- ABA 1: CADASTRO ---
