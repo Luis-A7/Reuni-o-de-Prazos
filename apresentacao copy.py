@@ -425,15 +425,40 @@ with tab_tabelas:
                 "Projetado %": st.column_config.NumberColumn(format="%.0f%%"),
                 "Fabricado %": st.column_config.NumberColumn(format="%.0f%%"),
                 "Montado %": st.column_config.NumberColumn(format="%.0f%%"),
-                "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100),
-                "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100),
-                "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100),
+                "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200), # Aumentei max para permitir gordura
+                "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
+                "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
                 "Volume_Projetado": None, "Volume_Fabricado": None, "Volume_Montado": None, "Orcamento": None, "Orcamento Lajes": None, "Semana": None
             }
         )
         st.markdown("---")
 
-    df_calculado = df_editado.copy()
+    # ==============================================================================
+    #  CORREÇÃO: LÓGICA DE PREENCHIMENTO (FORWARD FILL) PARA AS PREVISÕES
+    # ==============================================================================
+    import numpy as np # Garante que numpy esteja disponível
+    
+    df_calculado = df_editado.copy().sort_values(['Obra', 'Semana'])
+    
+    cols_previstas = ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]
+    
+    # Para cada coluna de previsão:
+    # 1. Transforma 0.0 em NaN (vazio) para podermos preencher com o valor anterior
+    #    (Assumindo que o progresso nunca volta a zero real depois de começar)
+    for col in cols_previstas:
+        # Substitui 0 por NaN temporariamente
+        df_calculado[col] = df_calculado[col].replace(0.0, np.nan)
+        
+        # Preenche os buracos com o valor da semana anterior (por Obra)
+        df_calculado[col] = df_calculado.groupby('Obra')[col].ffill()
+        
+        # Se ainda sobrou NaN (no começo da obra, antes de qualquer input), volta a ser 0
+        df_calculado[col] = df_calculado[col].fillna(0.0)
+
+    # ==============================================================================
+    #  FIM DA CORREÇÃO
+    # ==============================================================================
+
     df_calculado["Volume Projetado Previsto"] = (df_calculado["Orcamento"] * (df_calculado["Projeto Previsto %"] / 100))
     df_calculado["Volume Fabricado Previsto"] = (df_calculado["Orcamento"] * (df_calculado["Fabricação Prevista %"] / 100))
     df_calculado["Volume Montado Previsto"] = (df_calculado["Orcamento"] * (df_calculado["Montagem Prevista %"] / 100))
@@ -444,12 +469,11 @@ with tab_tabelas:
 
     st.markdown("---")
     if st.button("💾 Salvar Alterações no Banco de Dados", type="primary"):
-        salvar_dados_usuario(df_editado, st.session_state['orcamentos'])
+        salvar_dados_usuario(df_editado, st.session_state['orcamentos']) # Salva o original (df_editado), não o preenchido
 
     if show_result_table:
         st.subheader("✅ 3. Tabela de Resultado Completa")
         st.dataframe(df_final_display, width="stretch", column_config={"Semana_Display": "Semana", "Projetado %": st.column_config.NumberColumn(format="%.0f%%"), "Fabricado %": st.column_config.NumberColumn(format="%.0f%%"), "Montado %": st.column_config.NumberColumn(format="%.0f%%"), "Orcamento": st.column_config.NumberColumn(format="%.2f"), "Orcamento Lajes": st.column_config.NumberColumn(format="%.2f"), "Volume Projetado Previsto": st.column_config.NumberColumn(format="%.2f"), "Volume Fabricado Previsto": st.column_config.NumberColumn(format="%.2f"), "Volume Montado Previsto": st.column_config.NumberColumn(format="%.2f")})
-
 # --- ABA 3: GRÁFICOS ---
 with tab_graficos:
     st.subheader("📈 4. Gráfico de Tendências de Porcentagens")
