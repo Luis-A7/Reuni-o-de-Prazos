@@ -425,35 +425,40 @@ with tab_tabelas:
                 "Projetado %": st.column_config.NumberColumn(format="%.0f%%"),
                 "Fabricado %": st.column_config.NumberColumn(format="%.0f%%"),
                 "Montado %": st.column_config.NumberColumn(format="%.0f%%"),
-                "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100), # Aumentei max para permitir gordura
-                "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100),
-                "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=100),
+                "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
+                "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
+                "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
                 "Volume_Projetado": None, "Volume_Fabricado": None, "Volume_Montado": None, "Orcamento": None, "Orcamento Lajes": None, "Semana": None
             }
         )
         st.markdown("---")
 
     # ==============================================================================
-    #  CORREÇÃO: LÓGICA DE PREENCHIMENTO (FORWARD FILL) PARA AS PREVISÕES
+    #  CORREÇÃO: LÓGICA DE CORTE APÓS 100%
     # ==============================================================================
-    import numpy as np # Garante que numpy esteja disponível
+    import numpy as np 
     
     df_calculado = df_editado.copy().sort_values(['Obra', 'Semana'])
-    
     cols_previstas = ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]
     
-    # Para cada coluna de previsão:
-    # 1. Transforma 0.0 em NaN (vazio) para podermos preencher com o valor anterior
-    #    (Assumindo que o progresso nunca volta a zero real depois de começar)
     for col in cols_previstas:
-        # Substitui 0 por NaN temporariamente
+        # 1. Transforma 0.0 em NaN para permitir o preenchimento (ffill)
         df_calculado[col] = df_calculado[col].replace(0.0, np.nan)
         
-        # Preenche os buracos com o valor da semana anterior (por Obra)
+        # 2. Preenche buracos com o valor anterior (para evitar quedas no meio do gráfico)
         df_calculado[col] = df_calculado.groupby('Obra')[col].ffill()
         
-        # Se ainda sobrou NaN (no começo da obra, antes de qualquer input), volta a ser 0
+        # 3. Preenche APENAS os NaNs iniciais (antes do projeto começar) com 0
+        #    (Se não fizermos isso agora, o passo 4 pode falhar ou deixar buracos no início)
         df_calculado[col] = df_calculado[col].fillna(0.0)
+
+        # 4. LÓGICA DE CORTE: Se a semana ANTERIOR já era >= 100%, a atual vira NaN.
+        #    Isso faz o gráfico parar de desenhar a linha.
+        prev_vals = df_calculado.groupby('Obra')[col].shift(1)
+        mask_concluido = prev_vals >= 100.0
+        
+        # Aplica NaN onde o projeto já estava concluído na semana anterior
+        df_calculado.loc[mask_concluido, col] = np.nan
 
     # ==============================================================================
     #  FIM DA CORREÇÃO
@@ -469,7 +474,8 @@ with tab_tabelas:
 
     st.markdown("---")
     if st.button("💾 Salvar Alterações no Banco de Dados", type="primary"):
-        salvar_dados_usuario(df_editado, st.session_state['orcamentos']) # Salva o original (df_editado), não o preenchido
+        # Salva o df_editado (input original do usuário), sem as manipulações visuais
+        salvar_dados_usuario(df_editado, st.session_state['orcamentos'])
 
     if show_result_table:
         st.subheader("✅ 3. Tabela de Resultado Completa")
