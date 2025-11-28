@@ -21,7 +21,7 @@ DB_CONFIG = {
 DB_URL = f"mysql+mysqlconnector://{st.secrets['db_user']}:{st.secrets['db_password']}@{st.secrets['db_host']}:3306/{st.secrets['db_name']}"
 
 # ========================================================
-#     FUNÇÃO PARA LER DADOS (POR SEMANA)
+#     FUNÇÃO PARA LER DADOS (POR SEMANA) - MODIFICADA
 # ========================================================
 @st.cache_data(ttl=300) 
 def carregar_dados():
@@ -56,10 +56,19 @@ def carregar_dados():
     """
     df = pd.read_sql(query, conn)
     conn.close()
+
+    # --- LÓGICA DE UNIFICAÇÃO (MALL SILVIO SILVEIRA) ---
+    # Renomeia "LOJAS" para "POA"
+    df.loc[df['Obra'] == 'MALL SILVIO SILVEIRA - LOJAS', 'Obra'] = 'MALL SILVIO SILVEIRA - POA'
+    
+    # Agrupa novamente por Obra e Semana para somar os volumes das duas que agora têm o mesmo nome
+    df = df.groupby(['Obra', 'Semana'], as_index=False)[['Volume_Projetado', 'Volume_Fabricado', 'Volume_Montado']].sum()
+    # ---------------------------------------------------
+
     return df
 
 # ========================================================
-# FUNÇÃO PARA LER DADOS (TOTAIS POR OBRA)
+# FUNÇÃO PARA LER DADOS (TOTAIS POR OBRA) - MODIFICADA
 # ========================================================
 @st.cache_data(ttl=300)
 def carregar_dados_gerais():
@@ -79,10 +88,25 @@ def carregar_dados_gerais():
     """
     df_geral = pd.read_sql(query, conn)
     conn.close()
+
+    # --- LÓGICA DE UNIFICAÇÃO (MALL SILVIO SILVEIRA) ---
+    df_geral.loc[df_geral['Obra'] == 'MALL SILVIO SILVEIRA - LOJAS', 'Obra'] = 'MALL SILVIO SILVEIRA - POA'
+    
+    # Agrupa somando os volumes e fazendo a média da taxa de aço
+    df_geral = df_geral.groupby('Obra', as_index=False).agg({
+        'Projetado': 'sum',
+        'Fabricado': 'sum',
+        'Acabado': 'sum',
+        'Expedido': 'sum',
+        'Montado': 'sum',
+        'Taxa de Aço': 'mean' # Média das taxas das duas obras
+    })
+    # ---------------------------------------------------
+
     return df_geral
 
 # ========================================================
-# FUNÇÃO PARA LER DADOS (POR FAMÍLIA)
+# FUNÇÃO PARA LER DADOS (POR FAMÍLIA) - MODIFICADA
 # ========================================================
 @st.cache_data(ttl=300)
 def carregar_dados_familias():
@@ -107,6 +131,14 @@ def carregar_dados_familias():
     """
     df_familias = pd.read_sql(query, conn)
     conn.close()
+
+    # --- LÓGICA DE UNIFICAÇÃO (MALL SILVIO SILVEIRA) ---
+    df_familias.loc[df_familias['Obra'] == 'MALL SILVIO SILVEIRA - LOJAS', 'Obra'] = 'MALL SILVIO SILVEIRA - POA'
+    
+    # Agrupa por Obra e Família, somando quantidades e volumes
+    df_familias = df_familias.groupby(['Obra', 'Familia'], as_index=False).sum()
+    # ---------------------------------------------------
+
     return df_familias
 
 # ========================================================
