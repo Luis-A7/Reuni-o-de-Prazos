@@ -532,9 +532,9 @@ with tab_graficos:
     else:
         st.info("Gráfico não disponível.")
 
-# --- ABA 4: TABELA GERAL (COM PRAZOS E RESTANTES) ---
+# --- ABA 4: TABELA GERAL (COMPLETA COM VOLUMES E PRAZOS) ---
 with tab_geral:
-    st.subheader("🏗️ Resumo Geral e Prazos")
+    st.subheader("🏗️ Resumo Geral Detalhado")
     try:
         df_geral = carregar_dados_gerais()
         
@@ -544,16 +544,23 @@ with tab_geral:
         # Merge com os dados de orçamento e prazos
         df_geral = df_geral.merge(df_orcamentos_clean, on="Obra", how="left")
 
-        # 2. CÁLCULO DE PORCENTAGENS
-        cols_calc = ["Projetado", "Fabricado", "Acabado", "Expedido", "Montado"]
-        for col in cols_calc:
-            df_geral[col] = df_geral[col].fillna(0)
-            df_geral[f"{col} %"] = (df_geral[col] / df_geral["Orcamento"]) * 100
+        # 2. CÁLCULO DE PORCENTAGENS E VOLUMES
+        # Garante que as colunas numéricas existam e preenche vazios com 0
+        cols_numericas = ["Orcamento", "Orcamento Lajes", "Projetado", "Fabricado", "Acabado", "Expedido", "Montado"]
+        for col in cols_numericas:
+            if col in df_geral.columns:
+                df_geral[col] = df_geral[col].fillna(0.0)
 
-        # 3. CORREÇÃO ROBUSTA DE DATA (RESOLVE O ERRO <class 'list'>)
-        # Força conversão para string, limpa caracteres de lista e converte para data
+        # Calcula % para todas as etapas
+        etapas = ["Projetado", "Fabricado", "Acabado", "Expedido", "Montado"]
+        for etapa in etapas:
+            # Evita divisão por zero
+            df_geral[f"{etapa} %"] = df_geral.apply(
+                lambda row: (row[etapa] / row["Orcamento"] * 100) if row["Orcamento"] > 0 else 0, axis=1
+            )
+
+        # 3. CORREÇÃO DE DATAS
         df_geral['Data Inicio'] = df_geral['Data Inicio'].astype(str).str.replace(r'[\[\]\']', '', regex=True)
-        # Transforma 'NaT', 'None' strings em NaN real
         df_geral['Data Inicio'] = df_geral['Data Inicio'].replace({'NaT': None, 'nan': None, 'None': None, '': None})
         df_geral['Data Inicio'] = pd.to_datetime(df_geral['Data Inicio'], errors='coerce')
 
@@ -561,11 +568,9 @@ with tab_geral:
         hoje = pd.to_datetime(datetime.date.today())
 
         def calcular_restante(row, coluna_prazo):
-            # Se não tiver data ou prazo, retorna vazio
             if pd.isna(row['Data Inicio']) or pd.isna(row[coluna_prazo]) or row[coluna_prazo] == 0:
                 return None
             try:
-                # Data estimada de fim = Inicio + Prazo em dias
                 data_fim = row['Data Inicio'] + pd.Timedelta(days=int(row[coluna_prazo]))
                 return (data_fim - hoje).days
             except:
@@ -575,43 +580,68 @@ with tab_geral:
         df_geral['Restante Fab'] = df_geral.apply(lambda row: calcular_restante(row, 'Prazo Fabricacao'), axis=1)
         df_geral['Restante Mont'] = df_geral.apply(lambda row: calcular_restante(row, 'Prazo Montagem'), axis=1)
 
-        # 5. ORGANIZAÇÃO DAS COLUNAS (LADO A LADO)
+        # 5. ORGANIZAÇÃO DAS COLUNAS (ORDEM DA IMAGEM 2 + PRAZOS)
         colunas_ordenadas = [
             "Obra", 
             "Orcamento", 
-            "Data Inicio",
-            # Setor Projeto
-            "Projetado %", "Restante Proj",
-            # Setor Fabricação
-            "Fabricado %", "Restante Fab",
-            # Setor Montagem
-            "Montado %", "Restante Mont",
-            # Outros
-            "Taxa de Aço"
+            "Orcamento Lajes",
+            "Data Inicio", # Adicionado aqui
+            
+            # Etapa Projeto
+            "Projetado", "Projetado %", "Restante Proj",
+            
+            "Taxa de Aço",
+            
+            # Etapa Fabricação
+            "Fabricado", "Fabricado %", "Restante Fab",
+            
+            # Etapa Acabamento (Sem prazo, conforme imagem 2)
+            "Acabado", "Acabado %",
+            
+            # Etapa Expedição (Sem prazo, conforme imagem 2)
+            "Expedido", "Expedido %",
+            
+            # Etapa Montagem
+            "Montado", "Montado %", "Restante Mont"
         ]
         
-        # Filtra apenas as que existem no dataframe para evitar erro
+        # Filtra para evitar erro se alguma coluna faltar
         cols_final = [c for c in colunas_ordenadas if c in df_geral.columns]
 
+        # 6. EXIBIÇÃO
         st.dataframe(
             df_geral[cols_final], 
             width="stretch", 
             hide_index=True, 
             column_config={
-                "Orcamento": st.column_config.NumberColumn(format="%.2f"),
+                # Configuração dos Números Principais
+                "Orcamento": st.column_config.NumberColumn("Orçamento", format="%.2f"),
+                "Orcamento Lajes": st.column_config.NumberColumn("Orç. Lajes", format="%.2f"),
                 "Data Inicio": st.column_config.DateColumn("Início", format="DD/MM/YYYY"),
-                
-                # Configuração Visual: Barra de Progresso + Número de Dias
-                "Projetado %": st.column_config.ProgressColumn("Proj. %", format="%.0f%%", min_value=0, max_value=100),
-                "Restante Proj": st.column_config.NumberColumn("Faltam (Dias)", format="%d d"),
-                
-                "Fabricado %": st.column_config.ProgressColumn("Fab. %", format="%.0f%%", min_value=0, max_value=100),
-                "Restante Fab": st.column_config.NumberColumn("Faltam (Dias)", format="%d d"),
-                
-                "Montado %": st.column_config.ProgressColumn("Mont. %", format="%.0f%%", min_value=0, max_value=100),
-                "Restante Mont": st.column_config.NumberColumn("Faltam (Dias)", format="%d d"),
-                
-                "Taxa de Aço": st.column_config.NumberColumn("Aço (kg/m³)", format="%.2f")
+                "Taxa de Aço": st.column_config.NumberColumn("Taxa Aço", format="%.2f"),
+
+                # PROJETO
+                "Projetado": st.column_config.NumberColumn("Vol. Proj.", format="%.2f"),
+                "Projetado %": st.column_config.NumberColumn("Proj. %", format="%.1f%%"), # Removida barra de progresso para ficar igual imagem 2
+                "Restante Proj": st.column_config.NumberColumn("⏳ Dias", format="%d"),
+
+                # FABRICAÇÃO
+                "Fabricado": st.column_config.NumberColumn("Vol. Fab.", format="%.2f"),
+                "Fabricado %": st.column_config.NumberColumn("Fab. %", format="%.1f%%"),
+                "Restante Fab": st.column_config.NumberColumn("⏳ Dias", format="%d"),
+
+                # ACABAMENTO
+                "Acabado": st.column_config.NumberColumn("Vol. Acab.", format="%.2f"),
+                "Acabado %": st.column_config.NumberColumn("Acab. %", format="%.1f%%"),
+
+                # EXPEDIÇÃO
+                "Expedido": st.column_config.NumberColumn("Vol. Exp.", format="%.2f"),
+                "Expedido %": st.column_config.NumberColumn("Exp. %", format="%.1f%%"),
+
+                # MONTAGEM
+                "Montado": st.column_config.NumberColumn("Vol. Mont.", format="%.2f"),
+                "Montado %": st.column_config.NumberColumn("Mont. %", format="%.1f%%"),
+                "Restante Mont": st.column_config.NumberColumn("⏳ Dias", format="%d"),
             }
         )
     except Exception as e:
