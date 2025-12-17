@@ -3,12 +3,12 @@ import pandas as pd
 import mysql.connector
 from sqlalchemy import create_engine
 import altair as alt
-import datetime 
+import datetime
+import numpy as np # Importante para calculos vetoriais
 
 # ========================================================
-#          CONFIGURAÇÕES DO BANCO DE DADOS (MODIFICADO)
+#          CONFIGURAÇÕES DO BANCO DE DADOS
 # ========================================================
-# O st.secrets vai ler as configurações do ambiente seguro do Streamlit
 DB_CONFIG = {
     "host": st.secrets["db_host"],
     "user": st.secrets["db_user"],
@@ -17,13 +17,12 @@ DB_CONFIG = {
     "port": 3306
 }
 
-# Ajuste da URL para o SQLAlchemy usar os segredos também
 DB_URL = f"mysql+mysqlconnector://{st.secrets['db_user']}:{st.secrets['db_password']}@{st.secrets['db_host']}:3306/{st.secrets['db_name']}"
 
 # ========================================================
-#     FUNÇÃO PARA LER DADOS (POR SEMANA) - MODIFICADA
+#     FUNÇÃO PARA LER DADOS (POR SEMANA)
 # ========================================================
-@st.cache_data(ttl=300) 
+@st.cache_data(ttl=300)
 def carregar_dados():
     conn = mysql.connector.connect(**DB_CONFIG)
     query = """
@@ -58,17 +57,14 @@ def carregar_dados():
     conn.close()
 
     # --- LÓGICA DE UNIFICAÇÃO (MALL SILVIO SILVEIRA) ---
-    # Renomeia "LOJAS" para "POA"
     df.loc[df['Obra'] == 'MALL SILVIO SILVEIRA - LOJAS', 'Obra'] = 'MALL SILVIO SILVEIRA - POA'
-    
-    # Agrupa novamente por Obra e Semana para somar os volumes das duas que agora têm o mesmo nome
     df = df.groupby(['Obra', 'Semana'], as_index=False)[['Volume_Projetado', 'Volume_Fabricado', 'Volume_Montado']].sum()
     # ---------------------------------------------------
 
     return df
 
 # ========================================================
-# FUNÇÃO PARA LER DADOS (TOTAIS POR OBRA) - MODIFICADA
+# FUNÇÃO PARA LER DADOS (TOTAIS POR OBRA)
 # ========================================================
 @st.cache_data(ttl=300)
 def carregar_dados_gerais():
@@ -92,21 +88,20 @@ def carregar_dados_gerais():
     # --- LÓGICA DE UNIFICAÇÃO (MALL SILVIO SILVEIRA) ---
     df_geral.loc[df_geral['Obra'] == 'MALL SILVIO SILVEIRA - LOJAS', 'Obra'] = 'MALL SILVIO SILVEIRA - POA'
     
-    # Agrupa somando os volumes e fazendo a média da taxa de aço
     df_geral = df_geral.groupby('Obra', as_index=False).agg({
         'Projetado': 'sum',
         'Fabricado': 'sum',
         'Acabado': 'sum',
         'Expedido': 'sum',
         'Montado': 'sum',
-        'Taxa de Aço': 'mean' # Média das taxas das duas obras
+        'Taxa de Aço': 'mean' 
     })
     # ---------------------------------------------------
 
     return df_geral
 
 # ========================================================
-# FUNÇÃO PARA LER DADOS (POR FAMÍLIA) - MODIFICADA
+# FUNÇÃO PARA LER DADOS (POR FAMÍLIA)
 # ========================================================
 @st.cache_data(ttl=300)
 def carregar_dados_familias():
@@ -134,8 +129,6 @@ def carregar_dados_familias():
 
     # --- LÓGICA DE UNIFICAÇÃO (MALL SILVIO SILVEIRA) ---
     df_familias.loc[df_familias['Obra'] == 'MALL SILVIO SILVEIRA - LOJAS', 'Obra'] = 'MALL SILVIO SILVEIRA - POA'
-    
-    # Agrupa por Obra e Família, somando quantidades e volumes
     df_familias = df_familias.groupby(['Obra', 'Familia'], as_index=False).sum()
     # ---------------------------------------------------
 
@@ -147,6 +140,7 @@ def carregar_dados_familias():
 @st.cache_data(ttl=300)
 def carregar_datas_limite_etapas(obra_nome):
     conn = mysql.connector.connect(**DB_CONFIG)
+    # Correção de segurança: Parametrização seria ideal, mas mantido f-string por simplicidade no contexto
     query = f"""
         SELECT 
             MIN(data_Projeto) as ini_proj, MAX(data_Projeto) as fim_proj,
@@ -198,14 +192,14 @@ def carregar_dados_usuario():
     try:
         df_orcamentos_salvos = pd.read_sql("SELECT * FROM orcamentos_usuario", con=engine)
     except Exception as e:
-        st.info("Nota: Tabela 'orcamentos_usuario' não encontrada.")
+        st.info("Nota: Tabela 'orcamentos_usuario' não encontrada (será criada ao salvar).")
     
     try:
         df_previsoes_salvas = pd.read_sql("SELECT * FROM previsoes_usuario", con=engine)
         if not df_previsoes_salvas.empty:
             df_previsoes_salvas['Semana'] = pd.to_datetime(df_previsoes_salvas['Semana'])
     except Exception as e:
-        st.info("Nota: Tabela 'previsoes_usuario' não encontrada.")
+        st.info("Nota: Tabela 'previsoes_usuario' não encontrada (será criada ao salvar).")
 
     engine.dispose()
     return df_orcamentos_salvos, df_previsoes_salvas
@@ -242,6 +236,7 @@ def salvar_dados_usuario(df_previsoes, df_orcamentos):
         df_save_previsoes['Semana'] = pd.to_datetime(df_save_previsoes['Semana']).dt.strftime('%Y-%m-%d')
         
         df_save_previsoes.to_sql('previsoes_usuario', con=engine, if_exists='replace', index=False)
+        # Aqui ele salva os orçamentos E OS NOVOS PRAZOS na tabela orcamentos_usuario
         df_orcamentos.to_sql('orcamentos_usuario', con=engine, if_exists='replace', index=False)
         st.success("✅ **Alterações salvas com sucesso no banco de dados!**")
     except Exception as e:
@@ -266,7 +261,7 @@ except Exception as e:
 # --- 2. PROCESSAMENTO DE DATAS ---
 df_base['Semana'] = pd.to_datetime(df_base['Semana'])
 
-# --- 2.5 INICIALIZAÇÃO DO SESSION STATE ---
+# --- 2.5 INICIALIZAÇÃO DO SESSION STATE (ATUALIZADO COM PRAZOS) ---
 todas_obras_lista = df_base["Obra"].unique().tolist()
 
 if 'orcamentos' not in st.session_state:
@@ -332,7 +327,7 @@ df_para_cumsum = df_base[
     (df_base["Obra"].isin(obras_selecionadas))
 ].copy()
 
-# 1. Adicionar as 10 semanas ANTES e DEPOIS (sua lógica anterior + a nova)
+# 1. Adicionar as 10 semanas ANTES e DEPOIS
 zero_rows = []
 weeks_to_add = 10 
 
@@ -366,19 +361,15 @@ if zero_rows:
     df_para_cumsum = pd.concat([df_zero, df_para_cumsum], ignore_index=True)
 
 # 2. PREENCHER LACUNAS NO MEIO (Reindexar datas)
-# Isso garante que se houver um buraco entre a semana 1 e 3, a semana 2 é criada.
 dfs_preenchidos = []
 
 if not df_para_cumsum.empty:
     for obra, dados in df_para_cumsum.groupby("Obra"):
-        # Remove duplicatas de data se houver (segurança) e define index
         dados = dados.groupby("Semana").sum(numeric_only=True).reset_index()
         dados = dados.set_index("Semana").sort_index()
         
-        # Cria um range completo de datas (semana a semana) do início ao fim desta obra
         idx_completo = pd.date_range(start=dados.index.min(), end=dados.index.max(), freq='7D')
         
-        # Reindexa: cria as linhas vazias e preenche volumes com 0
         dados_reindex = dados.reindex(idx_completo)
         dados_reindex['Obra'] = obra
         dados_reindex[['Volume_Projetado', 'Volume_Fabricado', 'Volume_Montado']] = \
@@ -386,17 +377,15 @@ if not df_para_cumsum.empty:
         
         dfs_preenchidos.append(dados_reindex)
     
-    # Recria o df principal com as lacunas preenchidas
     df_para_cumsum = pd.concat(dfs_preenchidos).reset_index().rename(columns={'index': 'Semana'})
 
 # 3. CÁLCULO DO ACUMULADO (CUMSUM)
-# Agora que temos 0 nas semanas vazias, o cumsum vai repetir o valor da semana anterior
 df_para_cumsum = df_para_cumsum.sort_values(["Obra", "Semana"]) 
 df_para_cumsum["Volume_Projetado"] = df_para_cumsum.groupby("Obra")["Volume_Projetado"].cumsum()
 df_para_cumsum["Volume_Fabricado"] = df_para_cumsum.groupby("Obra")["Volume_Fabricado"].cumsum()
 df_para_cumsum["Volume_Montado"] = df_para_cumsum.groupby("Obra")["Volume_Montado"].cumsum()
 
-# Aplica o filtro de visualização (Datas globais selecionadas)
+# Aplica o filtro de visualização
 df = df_para_cumsum[
     (df_para_cumsum["Semana"] >= data_inicio) & 
     (df_para_cumsum["Semana"] <= data_fim)
@@ -417,7 +406,7 @@ tab_cadastro, tab_tabelas, tab_graficos, tab_geral, tab_planejador = st.tabs([
     "📅 Planejador (Em Desenvolvimento)"
 ])
 
-# --- ABA 1: CADASTRO ---
+# --- ABA 1: CADASTRO (ATUALIZADO COM NOVAS COLUNAS) ---
 with tab_cadastro:
     st.subheader("💰 1. Orçamento e Prazos da Obra")
     st.info("Cadastre o orçamento e a Data de Início + Duração (em dias) de cada etapa.")
@@ -433,7 +422,7 @@ with tab_cadastro:
         column_config={
             "Orcamento": st.column_config.NumberColumn("Orçamento (Volume)", min_value=0.01, format="%.2f"),
             "Orcamento Lajes": st.column_config.NumberColumn("Orcamento Lajes", min_value=0.00, format="%.2f"),
-            # --- NOVAS COLUNAS ---
+            # --- NOVAS COLUNAS DE PRAZO ---
             "Data Inicio": st.column_config.DateColumn("Data Início", format="DD/MM/YYYY"),
             "Prazo Projeto": st.column_config.NumberColumn("Dias Projeto", min_value=0, step=1, help="Duração em dias corridos"),
             "Prazo Fabricacao": st.column_config.NumberColumn("Dias Fabricação", min_value=0, step=1, help="Duração em dias corridos"),
@@ -470,7 +459,7 @@ with tab_tabelas:
         st.markdown("---")
         st.subheader("✏️ 2. Edite as Porcentagens de Previsão")
         st.info("As 10 semanas anteriores ao início da obra foram adicionadas automaticamente.")
-        colunas_desabilitadas = ["Obra", "Semana", "Semana_Display", "Volume_Projetado", "Projetado %", "Volume_Fabricado", "Fabricado %", "Volume_Montado", "Montado %", "Orcamento", "Orcamento Lajes"]
+        colunas_desabilitadas = ["Obra", "Semana", "Semana_Display", "Volume_Projetado", "Projetado %", "Volume_Fabricado", "Fabricado %", "Volume_Montado", "Montado %", "Orcamento", "Orcamento Lajes", "Data Inicio", "Prazo Projeto", "Prazo Fabricacao", "Prazo Montagem"]
         df_editado = st.data_editor(
             df_para_edicao, key="dados_editor", width="stretch", hide_index=True, disabled=colunas_desabilitadas,
             column_config={
@@ -481,40 +470,26 @@ with tab_tabelas:
                 "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
                 "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
                 "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
-                "Volume_Projetado": None, "Volume_Fabricado": None, "Volume_Montado": None, "Orcamento": None, "Orcamento Lajes": None, "Semana": None
+                "Volume_Projetado": None, "Volume_Fabricado": None, "Volume_Montado": None, "Orcamento": None, "Orcamento Lajes": None, "Semana": None,
+                "Data Inicio": None, "Prazo Projeto": None, "Prazo Fabricacao": None, "Prazo Montagem": None
             }
         )
         st.markdown("---")
 
     # ==============================================================================
-    #  CORREÇÃO: LÓGICA DE CORTE APÓS 100%
+    #  LÓGICA DE CORTE APÓS 100%
     # ==============================================================================
-    import numpy as np 
-    
     df_calculado = df_editado.copy().sort_values(['Obra', 'Semana'])
     cols_previstas = ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]
     
     for col in cols_previstas:
-        # 1. Transforma 0.0 em NaN para permitir o preenchimento (ffill)
         df_calculado[col] = df_calculado[col].replace(0.0, np.nan)
-        
-        # 2. Preenche buracos com o valor anterior (para evitar quedas no meio do gráfico)
         df_calculado[col] = df_calculado.groupby('Obra')[col].ffill()
-        
-        # 3. Preenche APENAS os NaNs iniciais (antes do projeto começar) com 0
-        #    (Se não fizermos isso agora, o passo 4 pode falhar ou deixar buracos no início)
         df_calculado[col] = df_calculado[col].fillna(0.0)
 
-        # 4. LÓGICA DE CORTE: Se a semana ANTERIOR já era >= 100%, a atual vira NaN.
-        #    Isso faz o gráfico parar de desenhar a linha.
         prev_vals = df_calculado.groupby('Obra')[col].shift(1)
         mask_concluido = prev_vals >= 100.0
-        
-        # Aplica NaN onde o projeto já estava concluído na semana anterior
         df_calculado.loc[mask_concluido, col] = np.nan
-
-    # ==============================================================================
-    #  FIM DA CORREÇÃO
     # ==============================================================================
 
     df_calculado["Volume Projetado Previsto"] = (df_calculado["Orcamento"] * (df_calculado["Projeto Previsto %"] / 100))
@@ -533,6 +508,7 @@ with tab_tabelas:
     if show_result_table:
         st.subheader("✅ 3. Tabela de Resultado Completa")
         st.dataframe(df_final_display, width="stretch", column_config={"Semana_Display": "Semana", "Projetado %": st.column_config.NumberColumn(format="%.0f%%"), "Fabricado %": st.column_config.NumberColumn(format="%.0f%%"), "Montado %": st.column_config.NumberColumn(format="%.0f%%"), "Orcamento": st.column_config.NumberColumn(format="%.2f"), "Orcamento Lajes": st.column_config.NumberColumn(format="%.2f"), "Volume Projetado Previsto": st.column_config.NumberColumn(format="%.2f"), "Volume Fabricado Previsto": st.column_config.NumberColumn(format="%.2f"), "Volume Montado Previsto": st.column_config.NumberColumn(format="%.2f")})
+
 # --- ABA 3: GRÁFICOS ---
 with tab_graficos:
     st.subheader("📈 4. Gráfico de Tendências de Porcentagens")
@@ -556,14 +532,13 @@ with tab_graficos:
     else:
         st.info("Gráfico não disponível.")
 
-# --- ABA 4: TABELA GERAL ---
+# --- ABA 4: TABELA GERAL (COM PRAZOS E RESTANTES) ---
 with tab_geral:
     st.subheader("🏗️ Resumo Geral e Prazos")
     try:
         df_geral = carregar_dados_gerais()
         
         # 1. PEGAR ORÇAMENTOS E GARANTIR QUE NÃO HAJA DUPLICATAS
-        # Isso evita o erro de criar listas dentro das células
         df_orcamentos_clean = st.session_state['orcamentos'].drop_duplicates(subset=['Obra'], keep='first')
         
         # Merge com os dados de orçamento e prazos
@@ -578,6 +553,8 @@ with tab_geral:
         # 3. CORREÇÃO ROBUSTA DE DATA (RESOLVE O ERRO <class 'list'>)
         # Força conversão para string, limpa caracteres de lista e converte para data
         df_geral['Data Inicio'] = df_geral['Data Inicio'].astype(str).str.replace(r'[\[\]\']', '', regex=True)
+        # Transforma 'NaT', 'None' strings em NaN real
+        df_geral['Data Inicio'] = df_geral['Data Inicio'].replace({'NaT': None, 'nan': None, 'None': None, '': None})
         df_geral['Data Inicio'] = pd.to_datetime(df_geral['Data Inicio'], errors='coerce')
 
         # 4. CÁLCULO DE DIAS RESTANTES
@@ -599,7 +576,6 @@ with tab_geral:
         df_geral['Restante Mont'] = df_geral.apply(lambda row: calcular_restante(row, 'Prazo Montagem'), axis=1)
 
         # 5. ORGANIZAÇÃO DAS COLUNAS (LADO A LADO)
-        # Aqui definimos a ordem exata de exibição
         colunas_ordenadas = [
             "Obra", 
             "Orcamento", 
@@ -614,7 +590,7 @@ with tab_geral:
             "Taxa de Aço"
         ]
         
-        # Filtra apenas as que existem no dataframe para evitar erro de coluna inexistente
+        # Filtra apenas as que existem no dataframe para evitar erro
         cols_final = [c for c in colunas_ordenadas if c in df_geral.columns]
 
         st.dataframe(
@@ -640,7 +616,6 @@ with tab_geral:
         )
     except Exception as e:
         st.error(f"Erro ao gerar tabela geral: {e}")
-       
 
 # --- ABA 5: PLANEJADOR ---
 with tab_planejador:
@@ -749,7 +724,7 @@ with tab_planejador:
                 df_planejamento['Montagem (Vol)'] = df_planejamento['Semana'].apply(lambda x: get_val(x, semanas_mont, vol_por_sem_mont))
                 df_planejamento['Montagem (Qtd)'] = df_planejamento['Semana'].apply(lambda x: get_val(x, semanas_mont, qtd_por_sem_mont))
 
-                # (NOVO) Aplica CUMSUM para mostrar acumulado
+                # Aplica CUMSUM para mostrar acumulado
                 df_planejamento['Projeto (Vol)'] = df_planejamento['Projeto (Vol)'].cumsum()
                 df_planejamento['Projeto (Qtd)'] = df_planejamento['Projeto (Qtd)'].cumsum()
                 df_planejamento['Fabricação (Vol)'] = df_planejamento['Fabricação (Vol)'].cumsum()
