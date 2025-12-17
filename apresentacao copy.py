@@ -259,7 +259,7 @@ except Exception as e:
 # --- 2. PROCESSAMENTO DE DATAS ---
 df_base['Semana'] = pd.to_datetime(df_base['Semana'])
 
-# --- 2.5 INICIALIZAÇÃO DO SESSION STATE (ATUALIZADO PARA DATAS INICIO/FIM) ---
+# --- 2.5 INICIALIZAÇÃO DO SESSION STATE (CORRIGIDO PARA EVITAR ERRO DE COLUNA) ---
 todas_obras_lista = df_base["Obra"].unique().tolist()
 
 if 'orcamentos' not in st.session_state:
@@ -269,28 +269,28 @@ if 'orcamentos' not in st.session_state:
     df_orcamentos_para_editor = df_orcamentos_base.merge(
         df_orcamentos_salvos, on="Obra", how="left"
     )
-    
-    # Lista de colunas de Data que precisamos garantir
-    cols_datas = [
-        "Ini Projeto", "Fim Projeto", 
-        "Ini Fabricacao", "Fim Fabricacao", 
-        "Ini Montagem", "Fim Montagem"
-    ]
-    
-    # Garante que as colunas existem
-    for col in cols_datas:
-        if col not in df_orcamentos_para_editor.columns:
-            df_orcamentos_para_editor[col] = None
-    
-    # Valores padrão para números
-    defaults_num = {'Orcamento': 100.0, 'Orcamento Lajes': 0.0}
-    for col, val in defaults_num.items():
-        if col not in df_orcamentos_para_editor.columns:
-            df_orcamentos_para_editor[col] = val
-        else:
-            df_orcamentos_para_editor[col] = df_orcamentos_para_editor[col].fillna(val)
-
     st.session_state['orcamentos'] = df_orcamentos_para_editor
+
+# --- BLINDAGEM: Garante que as colunas existam mesmo se o cache for antigo ---
+# Isso conserta o erro "Fim Projeto" not found
+cols_datas_necessarias = [
+    "Ini Projeto", "Fim Projeto", 
+    "Ini Fabricacao", "Fim Fabricacao", 
+    "Ini Montagem", "Fim Montagem"
+]
+
+for col in cols_datas_necessarias:
+    if col not in st.session_state['orcamentos'].columns:
+        st.session_state['orcamentos'][col] = None
+
+# Garante valores padrão numéricos
+defaults_num = {'Orcamento': 100.0, 'Orcamento Lajes': 0.0}
+for col, val in defaults_num.items():
+    if col not in st.session_state['orcamentos'].columns:
+        st.session_state['orcamentos'][col] = val
+    else:
+        st.session_state['orcamentos'][col] = st.session_state['orcamentos'][col].fillna(val)
+# -----------------------------------------------------------------------------
 
 # --- 3. FILTRO GLOBAL ---
 st.subheader("⚙️ Filtros Globais")
@@ -323,8 +323,7 @@ df_para_cumsum = df_base[
     (df_base["Obra"].isin(obras_selecionadas))
 ].copy()
 
-# ... (Lógica de preenchimento de semanas - mantida igual para economizar espaço, 
-# se precisar alterar avise, mas o foco agora é o Cadastro e Tabela Geral) ...
+# ... (Lógica de preenchimento de semanas - mantida) ...
 zero_rows = []
 weeks_to_add = 10 
 for obra in obras_selecionadas:
@@ -394,7 +393,7 @@ with tab_cadastro:
     cols_datas = ["Ini Projeto", "Fim Projeto", "Ini Fabricacao", "Fim Fabricacao", "Ini Montagem", "Fim Montagem"]
     
     for col in cols_datas:
-        # Se a coluna não existir, cria
+        # Se a coluna não existir, cria (redundância de segurança)
         if col not in orcamentos_filtrado.columns:
             orcamentos_filtrado[col] = None
         # Força conversão para datetime
@@ -454,11 +453,12 @@ with tab_tabelas:
         st.markdown("---")
         st.subheader("✏️ 2. Edite as Porcentagens de Previsão")
         st.info("Previsões de avanço físico semanal.")
+        
         # Colunas que NÃO devem ser editadas aqui
-        colunas_desabilitadas = ["Obra", "Semana", "Semana_Display", "Volume_Projetado", "Projetado %", "Volume_Fabricado", "Fabricado %", "Volume_Montado", "Montado %", "Orcamento", "Orcamento Lajes"] + cols_datas
+        cols_ocultar = ["Obra", "Semana", "Semana_Display", "Volume_Projetado", "Projetado %", "Volume_Fabricado", "Fabricado %", "Volume_Montado", "Montado %", "Orcamento", "Orcamento Lajes"] + cols_datas
         
         df_editado = st.data_editor(
-            df_para_edicao, key="dados_editor", width="stretch", hide_index=True, disabled=colunas_desabilitadas,
+            df_para_edicao, key="dados_editor", width="stretch", hide_index=True, disabled=cols_ocultar,
             column_config={
                 "Semana_Display": "Semana", 
                 "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%"),
@@ -474,7 +474,7 @@ with tab_tabelas:
         )
         st.markdown("---")
 
-    # Logica de corte após 100% (Mantida)
+    # Logica de corte após 100%
     df_calculado = df_editado.copy().sort_values(['Obra', 'Semana'])
     cols_previstas = ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]
     for col in cols_previstas:
@@ -545,13 +545,15 @@ with tab_geral:
                 lambda row: (row[etapa] / row["Orcamento"] * 100) if row["Orcamento"] > 0 else 0, axis=1
             )
 
-        # 3. LIMPEZA DE DATAS
+        # 3. LIMPEZA DE DATAS (E GARANTIA QUE COLUNAS EXISTEM)
         cols_datas = ["Ini Projeto", "Fim Projeto", "Ini Fabricacao", "Fim Fabricacao", "Ini Montagem", "Fim Montagem"]
         for col in cols_datas:
-            if col in df_geral.columns:
-                df_geral[col] = df_geral[col].astype(str).str.replace(r'[\[\]\']', '', regex=True)
-                df_geral[col] = df_geral[col].replace({'NaT': None, 'nan': None, 'None': None, '': None})
-                df_geral[col] = pd.to_datetime(df_geral[col], errors='coerce')
+            if col not in df_geral.columns:
+                 df_geral[col] = None # Cria se não existir
+            
+            df_geral[col] = df_geral[col].astype(str).str.replace(r'[\[\]\']', '', regex=True)
+            df_geral[col] = df_geral[col].replace({'NaT': None, 'nan': None, 'None': None, '': None})
+            df_geral[col] = pd.to_datetime(df_geral[col], errors='coerce')
 
         # 4. CÁLCULO DE DIAS RESTANTES (Baseado na Data FIM da etapa)
         hoje = pd.to_datetime(datetime.date.today())
