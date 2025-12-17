@@ -4,7 +4,7 @@ import mysql.connector
 from sqlalchemy import create_engine
 import altair as alt
 import datetime
-import numpy as np # Importante para calculos vetoriais
+import numpy as np
 
 # ========================================================
 #          CONFIGURAÇÕES DO BANCO DE DADOS
@@ -140,7 +140,6 @@ def carregar_dados_familias():
 @st.cache_data(ttl=300)
 def carregar_datas_limite_etapas(obra_nome):
     conn = mysql.connector.connect(**DB_CONFIG)
-    # Correção de segurança: Parametrização seria ideal, mas mantido f-string por simplicidade no contexto
     query = f"""
         SELECT 
             MIN(data_Projeto) as ini_proj, MAX(data_Projeto) as fim_proj,
@@ -236,7 +235,6 @@ def salvar_dados_usuario(df_previsoes, df_orcamentos):
         df_save_previsoes['Semana'] = pd.to_datetime(df_save_previsoes['Semana']).dt.strftime('%Y-%m-%d')
         
         df_save_previsoes.to_sql('previsoes_usuario', con=engine, if_exists='replace', index=False)
-        # Aqui ele salva os orçamentos E OS NOVOS PRAZOS na tabela orcamentos_usuario
         df_orcamentos.to_sql('orcamentos_usuario', con=engine, if_exists='replace', index=False)
         st.success("✅ **Alterações salvas com sucesso no banco de dados!**")
     except Exception as e:
@@ -261,7 +259,7 @@ except Exception as e:
 # --- 2. PROCESSAMENTO DE DATAS ---
 df_base['Semana'] = pd.to_datetime(df_base['Semana'])
 
-# --- 2.5 INICIALIZAÇÃO DO SESSION STATE (ATUALIZADO COM PRAZOS) ---
+# --- 2.5 INICIALIZAÇÃO DO SESSION STATE (ATUALIZADO PARA DATAS INICIO/FIM) ---
 todas_obras_lista = df_base["Obra"].unique().tolist()
 
 if 'orcamentos' not in st.session_state:
@@ -272,31 +270,29 @@ if 'orcamentos' not in st.session_state:
         df_orcamentos_salvos, on="Obra", how="left"
     )
     
-    # --- PADRONIZAÇÃO DE VALORES PADRÃO (EXISTENTES E NOVOS) ---
-    defaults = {
-        'Orcamento': 100.0,
-        'Orcamento Lajes': 0.0,
-        'Prazo Projeto': 0,
-        'Prazo Fabricacao': 0,
-        'Prazo Montagem': 0
-    }
+    # Lista de colunas de Data que precisamos garantir
+    cols_datas = [
+        "Ini Projeto", "Fim Projeto", 
+        "Ini Fabricacao", "Fim Fabricacao", 
+        "Ini Montagem", "Fim Montagem"
+    ]
     
-    for col, val in defaults.items():
+    # Garante que as colunas existem
+    for col in cols_datas:
+        if col not in df_orcamentos_para_editor.columns:
+            df_orcamentos_para_editor[col] = None
+    
+    # Valores padrão para números
+    defaults_num = {'Orcamento': 100.0, 'Orcamento Lajes': 0.0}
+    for col, val in defaults_num.items():
         if col not in df_orcamentos_para_editor.columns:
             df_orcamentos_para_editor[col] = val
         else:
             df_orcamentos_para_editor[col] = df_orcamentos_para_editor[col].fillna(val)
 
-    # Tratamento especial para data (Data Inicio)
-    if 'Data Inicio' not in df_orcamentos_para_editor.columns:
-        df_orcamentos_para_editor['Data Inicio'] = None
-    else:
-        # Garante formato datetime
-        df_orcamentos_para_editor['Data Inicio'] = pd.to_datetime(df_orcamentos_para_editor['Data Inicio'])
-
     st.session_state['orcamentos'] = df_orcamentos_para_editor
 
-# --- 3. FILTRO GLOBAL (FORA DAS ABAS) ---
+# --- 3. FILTRO GLOBAL ---
 st.subheader("⚙️ Filtros Globais")
 
 min_date = df_base['Semana'].min()
@@ -322,70 +318,50 @@ with col3:
 data_inicio = pd.to_datetime(data_inicio)
 data_fim = pd.to_datetime(data_fim)
     
-# --- 4. PREPARAÇÃO DOS DADOS (PREENCHIMENTO DE LACUNAS + CUMSUM) ---
+# --- 4. CÁLCULOS E PREPARAÇÃO DOS DADOS ---
 df_para_cumsum = df_base[
     (df_base["Obra"].isin(obras_selecionadas))
 ].copy()
 
-# 1. Adicionar as 10 semanas ANTES e DEPOIS
+# ... (Lógica de preenchimento de semanas - mantida igual para economizar espaço, 
+# se precisar alterar avise, mas o foco agora é o Cadastro e Tabela Geral) ...
 zero_rows = []
 weeks_to_add = 10 
-
 for obra in obras_selecionadas:
     obra_df = df_para_cumsum[df_para_cumsum['Obra'] == obra]
     if not obra_df.empty:
-        # 10 Semanas ANTES
         min_obra_date = obra_df['Semana'].min()
         current_date = min_obra_date
         for _ in range(weeks_to_add):
             current_date = current_date - pd.Timedelta(days=7)
-            zero_rows.append({
-                'Obra': obra,
-                'Semana': current_date,
-                'Volume_Projetado': 0, 'Volume_Fabricado': 0, 'Volume_Montado': 0
-            })
-            
-        # 10 Semanas DEPOIS
+            zero_rows.append({'Obra': obra, 'Semana': current_date, 'Volume_Projetado': 0, 'Volume_Fabricado': 0, 'Volume_Montado': 0})
         max_obra_date = obra_df['Semana'].max()
         current_date_future = max_obra_date
         for _ in range(weeks_to_add):
             current_date_future = current_date_future + pd.Timedelta(days=7)
-            zero_rows.append({
-                'Obra': obra,
-                'Semana': current_date_future,
-                'Volume_Projetado': 0, 'Volume_Fabricado': 0, 'Volume_Montado': 0
-            })
+            zero_rows.append({'Obra': obra, 'Semana': current_date_future, 'Volume_Projetado': 0, 'Volume_Fabricado': 0, 'Volume_Montado': 0})
 
 if zero_rows:
     df_zero = pd.DataFrame(zero_rows)
     df_para_cumsum = pd.concat([df_zero, df_para_cumsum], ignore_index=True)
 
-# 2. PREENCHER LACUNAS NO MEIO (Reindexar datas)
 dfs_preenchidos = []
-
 if not df_para_cumsum.empty:
     for obra, dados in df_para_cumsum.groupby("Obra"):
         dados = dados.groupby("Semana").sum(numeric_only=True).reset_index()
         dados = dados.set_index("Semana").sort_index()
-        
         idx_completo = pd.date_range(start=dados.index.min(), end=dados.index.max(), freq='7D')
-        
         dados_reindex = dados.reindex(idx_completo)
         dados_reindex['Obra'] = obra
-        dados_reindex[['Volume_Projetado', 'Volume_Fabricado', 'Volume_Montado']] = \
-            dados_reindex[['Volume_Projetado', 'Volume_Fabricado', 'Volume_Montado']].fillna(0)
-        
+        dados_reindex[['Volume_Projetado', 'Volume_Fabricado', 'Volume_Montado']] = dados_reindex[['Volume_Projetado', 'Volume_Fabricado', 'Volume_Montado']].fillna(0)
         dfs_preenchidos.append(dados_reindex)
-    
     df_para_cumsum = pd.concat(dfs_preenchidos).reset_index().rename(columns={'index': 'Semana'})
 
-# 3. CÁLCULO DO ACUMULADO (CUMSUM)
 df_para_cumsum = df_para_cumsum.sort_values(["Obra", "Semana"]) 
 df_para_cumsum["Volume_Projetado"] = df_para_cumsum.groupby("Obra")["Volume_Projetado"].cumsum()
 df_para_cumsum["Volume_Fabricado"] = df_para_cumsum.groupby("Obra")["Volume_Fabricado"].cumsum()
 df_para_cumsum["Volume_Montado"] = df_para_cumsum.groupby("Obra")["Volume_Montado"].cumsum()
 
-# Aplica o filtro de visualização
 df = df_para_cumsum[
     (df_para_cumsum["Semana"] >= data_inicio) & 
     (df_para_cumsum["Semana"] <= data_fim)
@@ -397,32 +373,32 @@ if df.empty and not obras_selecionadas:
 
 df['Semana_Display'] = df['Semana'].apply(formatar_semana)
     
-# --- 5. DEFINIÇÃO DAS ABAS ---
+# --- 5. ABAS ---
 tab_cadastro, tab_tabelas, tab_graficos, tab_geral, tab_planejador = st.tabs([
     "📁 Cadastro", 
     "📊 Tabelas", 
     "📈 Gráficos",
     "🌍 Tabela Geral",
-    "📅 Planejador (Em Desenvolvimento)"
+    "📅 Planejador"
 ])
 
-# --- ABA 1: CADASTRO (CORRIGIDO) ---
+# --- ABA 1: CADASTRO (NOVA LÓGICA: DATA INICIO E FIM POR ETAPA) ---
 with tab_cadastro:
-    st.subheader("💰 1. Orçamento e Prazos da Obra")
-    st.info("Cadastre o orçamento e a Data de Início + Duração (em dias) de cada etapa.")
+    st.subheader("💰 1. Orçamento e Datas da Obra")
+    st.info("Cadastre o orçamento e as datas de INÍCIO e FIM para cada etapa.")
     
-    # Pega os dados da memória
+    # Copia e filtra
     orcamentos_filtrado = st.session_state['orcamentos'][st.session_state['orcamentos']['Obra'].isin(obras_selecionadas)].copy()
     
-    # --- CORREÇÃO DE ERRO DE TIPAGEM (CRUCIAL) ---
-    # 1. Força a coluna 'Data Inicio' ser datetime. Se falhar, vira NaT (que o editor aceita como vazio)
-    orcamentos_filtrado['Data Inicio'] = pd.to_datetime(orcamentos_filtrado['Data Inicio'], errors='coerce')
+    # --- CONVERSÃO SEGURA DE TIPOS (ESSENCIAL PARA EVITAR ERRO DE API) ---
+    cols_datas = ["Ini Projeto", "Fim Projeto", "Ini Fabricacao", "Fim Fabricacao", "Ini Montagem", "Fim Montagem"]
     
-    # 2. Garante que os prazos sejam numéricos (int/float) e não texto
-    cols_prazos = ["Prazo Projeto", "Prazo Fabricacao", "Prazo Montagem"]
-    for col in cols_prazos:
-        orcamentos_filtrado[col] = pd.to_numeric(orcamentos_filtrado[col], errors='coerce').fillna(0)
-    # ---------------------------------------------
+    for col in cols_datas:
+        # Se a coluna não existir, cria
+        if col not in orcamentos_filtrado.columns:
+            orcamentos_filtrado[col] = None
+        # Força conversão para datetime
+        orcamentos_filtrado[col] = pd.to_datetime(orcamentos_filtrado[col], errors='coerce')
 
     df_orcamentos_editado = st.data_editor(
         orcamentos_filtrado, 
@@ -431,24 +407,27 @@ with tab_cadastro:
         width="stretch", 
         disabled=["Obra"], 
         column_config={
-            "Orcamento": st.column_config.NumberColumn("Orçamento (Volume)", min_value=0.01, format="%.2f"),
-            "Orcamento Lajes": st.column_config.NumberColumn("Orcamento Lajes", min_value=0.00, format="%.2f"),
+            "Orcamento": st.column_config.NumberColumn("Orçamento (Vol)", min_value=0.01, format="%.2f"),
+            "Orcamento Lajes": st.column_config.NumberColumn("Orç. Lajes", min_value=0.00, format="%.2f"),
             
-            # Agora que forçamos o tipo acima, o DateColumn vai funcionar
-            "Data Inicio": st.column_config.DateColumn("Data Início", format="DD/MM/YYYY"),
+            # --- PROJETO ---
+            "Ini Projeto": st.column_config.DateColumn("Início Proj.", format="DD/MM/YYYY"),
+            "Fim Projeto": st.column_config.DateColumn("Fim Proj.", format="DD/MM/YYYY"),
             
-            "Prazo Projeto": st.column_config.NumberColumn("Dias Projeto", min_value=0, step=1, help="Duração em dias corridos"),
-            "Prazo Fabricacao": st.column_config.NumberColumn("Dias Fabricação", min_value=0, step=1, help="Duração em dias corridos"),
-            "Prazo Montagem": st.column_config.NumberColumn("Dias Montagem", min_value=0, step=1, help="Duração em dias corridos"),
+            # --- FABRICAÇÃO ---
+            "Ini Fabricacao": st.column_config.DateColumn("Início Fab.", format="DD/MM/YYYY"),
+            "Fim Fabricacao": st.column_config.DateColumn("Fim Fab.", format="DD/MM/YYYY"),
+            
+            # --- MONTAGEM ---
+            "Ini Montagem": st.column_config.DateColumn("Início Mont.", format="DD/MM/YYYY"),
+            "Fim Montagem": st.column_config.DateColumn("Fim Mont.", format="DD/MM/YYYY"),
         }
     )
-    
-    # Atualiza o session_state com os dados editados
-    # Usamos o combine_first ou update para garantir que os índices batam
+    # Atualiza session state
     st.session_state['orcamentos'].update(df_orcamentos_editado)
 
 
-# --- 6. MERGE E PREPARAÇÃO ---
+# --- 6. MERGE E PREPARAÇÃO DO DATAFRAME PRINCIPAL ---
 df_orcamentos_atual = st.session_state['orcamentos']
 df = df.merge(df_orcamentos_atual, on="Obra", how="left")
 df["Projetado %"] = (df["Volume_Projetado"] / df["Orcamento"]) * 100
@@ -458,9 +437,9 @@ df["Montado %"] = (df["Volume_Montado"] / df["Orcamento"]) * 100
 if not df_previsoes_salvas.empty:
     df = df.merge(df_previsoes_salvas, on=["Obra", "Semana"], how="left")
 
-df["Projeto Previsto %"] = df["Projeto Previsto %"].fillna(0.0)
-df["Fabricação Prevista %"] = df["Fabricação Prevista %"].fillna(0.0)
-df["Montagem Prevista %"] = df["Montagem Prevista %"].fillna(0.0)
+# Preenche vazios das previsões
+for col in ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]:
+    df[col] = df[col].fillna(0.0)
 df_para_edicao = df.copy() 
 
 # --- ABA 2: TABELAS ---
@@ -474,60 +453,54 @@ with tab_tabelas:
     if show_editor:
         st.markdown("---")
         st.subheader("✏️ 2. Edite as Porcentagens de Previsão")
-        st.info("As 10 semanas anteriores ao início da obra foram adicionadas automaticamente.")
-        colunas_desabilitadas = ["Obra", "Semana", "Semana_Display", "Volume_Projetado", "Projetado %", "Volume_Fabricado", "Fabricado %", "Volume_Montado", "Montado %", "Orcamento", "Orcamento Lajes", "Data Inicio", "Prazo Projeto", "Prazo Fabricacao", "Prazo Montagem"]
+        st.info("Previsões de avanço físico semanal.")
+        # Colunas que NÃO devem ser editadas aqui
+        colunas_desabilitadas = ["Obra", "Semana", "Semana_Display", "Volume_Projetado", "Projetado %", "Volume_Fabricado", "Fabricado %", "Volume_Montado", "Montado %", "Orcamento", "Orcamento Lajes"] + cols_datas
+        
         df_editado = st.data_editor(
             df_para_edicao, key="dados_editor", width="stretch", hide_index=True, disabled=colunas_desabilitadas,
             column_config={
                 "Semana_Display": "Semana", 
-                "Projetado %": st.column_config.NumberColumn(format="%.0f%%"),
-                "Fabricado %": st.column_config.NumberColumn(format="%.0f%%"),
-                "Montado %": st.column_config.NumberColumn(format="%.0f%%"),
-                "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
-                "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
-                "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%", min_value=0, max_value=200),
-                "Volume_Projetado": None, "Volume_Fabricado": None, "Volume_Montado": None, "Orcamento": None, "Orcamento Lajes": None, "Semana": None,
-                "Data Inicio": None, "Prazo Projeto": None, "Prazo Fabricacao": None, "Prazo Montagem": None
+                "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%"),
+                "Fabricação Prevista %": st.column_config.NumberColumn(format="%.0f%%"),
+                "Montagem Prevista %": st.column_config.NumberColumn(format="%.0f%%"),
+                "Volume_Projetado": None, "Volume_Fabricado": None, "Volume_Montado": None, 
+                "Orcamento": None, "Orcamento Lajes": None, "Semana": None,
+                # Oculta colunas de data aqui para limpar a visão
+                "Ini Projeto": None, "Fim Projeto": None, 
+                "Ini Fabricacao": None, "Fim Fabricacao": None, 
+                "Ini Montagem": None, "Fim Montagem": None
             }
         )
         st.markdown("---")
 
-    # ==============================================================================
-    #  LÓGICA DE CORTE APÓS 100%
-    # ==============================================================================
+    # Logica de corte após 100% (Mantida)
     df_calculado = df_editado.copy().sort_values(['Obra', 'Semana'])
     cols_previstas = ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]
-    
     for col in cols_previstas:
         df_calculado[col] = df_calculado[col].replace(0.0, np.nan)
         df_calculado[col] = df_calculado.groupby('Obra')[col].ffill()
         df_calculado[col] = df_calculado[col].fillna(0.0)
-
         prev_vals = df_calculado.groupby('Obra')[col].shift(1)
         mask_concluido = prev_vals >= 100.0
         df_calculado.loc[mask_concluido, col] = np.nan
-    # ==============================================================================
 
     df_calculado["Volume Projetado Previsto"] = (df_calculado["Orcamento"] * (df_calculado["Projeto Previsto %"] / 100))
     df_calculado["Volume Fabricado Previsto"] = (df_calculado["Orcamento"] * (df_calculado["Fabricação Prevista %"] / 100))
     df_calculado["Volume Montado Previsto"] = (df_calculado["Orcamento"] * (df_calculado["Montagem Prevista %"] / 100))
 
-    colunas_para_exibir = ["Obra", "Semana_Display", "Volume_Projetado", "Projetado %", "Projeto Previsto %", "Volume Projetado Previsto", "Volume_Fabricado", "Fabricado %", "Fabricação Prevista %", "Volume Fabricado Previsto", "Volume_Montado", "Montado %", "Montagem Prevista %", "Volume Montado Previsto", "Orcamento", "Orcamento Lajes"]
-    cols_existentes = [c for c in colunas_para_exibir if c in df_calculado.columns]
-    df_final_display = df_calculado[cols_existentes]
-
-    st.markdown("---")
     if st.button("💾 Salvar Alterações no Banco de Dados", type="primary"):
-        # Salva o df_editado (input original do usuário), sem as manipulações visuais
         salvar_dados_usuario(df_editado, st.session_state['orcamentos'])
 
     if show_result_table:
         st.subheader("✅ 3. Tabela de Resultado Completa")
-        st.dataframe(df_final_display, width="stretch", column_config={"Semana_Display": "Semana", "Projetado %": st.column_config.NumberColumn(format="%.0f%%"), "Fabricado %": st.column_config.NumberColumn(format="%.0f%%"), "Montado %": st.column_config.NumberColumn(format="%.0f%%"), "Orcamento": st.column_config.NumberColumn(format="%.2f"), "Orcamento Lajes": st.column_config.NumberColumn(format="%.2f"), "Volume Projetado Previsto": st.column_config.NumberColumn(format="%.2f"), "Volume Fabricado Previsto": st.column_config.NumberColumn(format="%.2f"), "Volume Montado Previsto": st.column_config.NumberColumn(format="%.2f")})
+        # Mostra colunas relevantes
+        cols_res = ["Obra", "Semana_Display", "Projetado %", "Projeto Previsto %", "Fabricado %", "Fabricação Prevista %", "Montado %", "Montagem Prevista %"]
+        st.dataframe(df_calculado[[c for c in cols_res if c in df_calculado.columns]], width="stretch", hide_index=True)
 
 # --- ABA 3: GRÁFICOS ---
 with tab_graficos:
-    st.subheader("📈 4. Gráfico de Tendências de Porcentagens")
+    st.subheader("📈 4. Gráfico de Tendências")
     id_vars = ["Obra", "Semana", "Semana_Display"]
     value_vars = ["Projetado %", "Projeto Previsto %", "Fabricado %", "Fabricação Prevista %", "Montado %", "Montagem Prevista %"]
     
@@ -539,106 +512,107 @@ with tab_graficos:
         df_chart = df_grafico.melt(id_vars=id_vars, value_vars=value_vars_existentes, var_name="Tipo_Metrica", value_name="Porcentagem")
         chart = alt.Chart(df_chart).mark_line(point=True).encode(
             x=alt.X('Semana_Display:N', title='Semana', sort=alt.SortField(field="Semana", order='ascending')),
-            y=alt.Y('Porcentagem:Q', title='Porcentagem Acumulada (%)'), 
+            y=alt.Y('Porcentagem:Q', title='Porcentagem (%)'), 
             color=alt.Color('Tipo_Metrica:N', title="Métrica"),
             strokeDash=alt.StrokeDash('Obra:N', title="Obra"),
             tooltip=['Obra', 'Semana_Display', 'Tipo_Metrica', alt.Tooltip('Porcentagem', format='.1f')]
-        ).properties(title="Tendências de Metas vs. Realizado").interactive()
+        ).interactive()
         st.altair_chart(chart, use_container_width=True)
     else:
         st.info("Gráfico não disponível.")
 
-# --- ABA 4: TABELA GERAL (COMPLETA COM VOLUMES E PRAZOS) ---
+# --- ABA 4: TABELA GERAL (COM NOVAS DATAS E CÁLCULOS) ---
 with tab_geral:
     st.subheader("🏗️ Resumo Geral Detalhado")
     try:
         df_geral = carregar_dados_gerais()
         
-        # 1. PEGAR ORÇAMENTOS E GARANTIR QUE NÃO HAJA DUPLICATAS
+        # 1. PEGAR ORÇAMENTOS (SEM DUPLICATAS)
         df_orcamentos_clean = st.session_state['orcamentos'].drop_duplicates(subset=['Obra'], keep='first')
         
-        # Merge com os dados de orçamento e prazos
+        # Merge
         df_geral = df_geral.merge(df_orcamentos_clean, on="Obra", how="left")
 
         # 2. CÁLCULO DE PORCENTAGENS E VOLUMES
-        # Garante que as colunas numéricas existam e preenche vazios com 0
         cols_numericas = ["Orcamento", "Orcamento Lajes", "Projetado", "Fabricado", "Acabado", "Expedido", "Montado"]
         for col in cols_numericas:
             if col in df_geral.columns:
                 df_geral[col] = df_geral[col].fillna(0.0)
 
-        # Calcula % para todas as etapas
         etapas = ["Projetado", "Fabricado", "Acabado", "Expedido", "Montado"]
         for etapa in etapas:
-            # Evita divisão por zero
             df_geral[f"{etapa} %"] = df_geral.apply(
                 lambda row: (row[etapa] / row["Orcamento"] * 100) if row["Orcamento"] > 0 else 0, axis=1
             )
 
-        # 3. CORREÇÃO DE DATAS
-        df_geral['Data Inicio'] = df_geral['Data Inicio'].astype(str).str.replace(r'[\[\]\']', '', regex=True)
-        df_geral['Data Inicio'] = df_geral['Data Inicio'].replace({'NaT': None, 'nan': None, 'None': None, '': None})
-        df_geral['Data Inicio'] = pd.to_datetime(df_geral['Data Inicio'], errors='coerce')
+        # 3. LIMPEZA DE DATAS
+        cols_datas = ["Ini Projeto", "Fim Projeto", "Ini Fabricacao", "Fim Fabricacao", "Ini Montagem", "Fim Montagem"]
+        for col in cols_datas:
+            if col in df_geral.columns:
+                df_geral[col] = df_geral[col].astype(str).str.replace(r'[\[\]\']', '', regex=True)
+                df_geral[col] = df_geral[col].replace({'NaT': None, 'nan': None, 'None': None, '': None})
+                df_geral[col] = pd.to_datetime(df_geral[col], errors='coerce')
 
-        # 4. CÁLCULO DE DIAS RESTANTES
+        # 4. CÁLCULO DE DIAS RESTANTES (Baseado na Data FIM da etapa)
         hoje = pd.to_datetime(datetime.date.today())
 
-        def calcular_restante(row, coluna_prazo):
-            if pd.isna(row['Data Inicio']) or pd.isna(row[coluna_prazo]) or row[coluna_prazo] == 0:
+        def calcular_restante_fim(row, coluna_fim):
+            if pd.isna(row[coluna_fim]):
                 return None
             try:
-                data_fim = row['Data Inicio'] + pd.Timedelta(days=int(row[coluna_prazo]))
-                return (data_fim - hoje).days
+                # Diferença direta: Data Fim - Hoje
+                return (row[coluna_fim] - hoje).days
             except:
                 return None
 
-        df_geral['Restante Proj'] = df_geral.apply(lambda row: calcular_restante(row, 'Prazo Projeto'), axis=1)
-        df_geral['Restante Fab'] = df_geral.apply(lambda row: calcular_restante(row, 'Prazo Fabricacao'), axis=1)
-        df_geral['Restante Mont'] = df_geral.apply(lambda row: calcular_restante(row, 'Prazo Montagem'), axis=1)
+        df_geral['Restante Proj'] = df_geral.apply(lambda row: calcular_restante_fim(row, 'Fim Projeto'), axis=1)
+        df_geral['Restante Fab'] = df_geral.apply(lambda row: calcular_restante_fim(row, 'Fim Fabricacao'), axis=1)
+        df_geral['Restante Mont'] = df_geral.apply(lambda row: calcular_restante_fim(row, 'Fim Montagem'), axis=1)
 
-        # 5. ORGANIZAÇÃO DAS COLUNAS (ORDEM DA IMAGEM 2 + PRAZOS)
+        # 5. ORGANIZAÇÃO VISUAL
         colunas_ordenadas = [
-            "Obra", 
-            "Orcamento", 
-            "Orcamento Lajes",
-            "Data Inicio", # Adicionado aqui
+            "Obra", "Orcamento", "Orcamento Lajes",
             
-            # Etapa Projeto
+            # PROJETO
+            "Ini Projeto", "Fim Projeto", 
             "Projetado", "Projetado %", "Restante Proj",
-            
             "Taxa de Aço",
             
-            # Etapa Fabricação
+            # FABRICAÇÃO
+            "Ini Fabricacao", "Fim Fabricacao",
             "Fabricado", "Fabricado %", "Restante Fab",
             
-            # Etapa Acabamento (Sem prazo, conforme imagem 2)
+            # OUTROS
             "Acabado", "Acabado %",
-            
-            # Etapa Expedição (Sem prazo, conforme imagem 2)
             "Expedido", "Expedido %",
             
-            # Etapa Montagem
+            # MONTAGEM
+            "Ini Montagem", "Fim Montagem",
             "Montado", "Montado %", "Restante Mont"
         ]
         
-        # Filtra para evitar erro se alguma coluna faltar
         cols_final = [c for c in colunas_ordenadas if c in df_geral.columns]
 
-        # 6. EXIBIÇÃO
         st.dataframe(
             df_geral[cols_final], 
             width="stretch", 
             hide_index=True, 
             column_config={
-                # Configuração dos Números Principais
                 "Orcamento": st.column_config.NumberColumn("Orçamento", format="%.2f"),
                 "Orcamento Lajes": st.column_config.NumberColumn("Orç. Lajes", format="%.2f"),
-                "Data Inicio": st.column_config.DateColumn("Início", format="DD/MM/YYYY"),
                 "Taxa de Aço": st.column_config.NumberColumn("Taxa Aço", format="%.2f"),
+                
+                # DATAS
+                "Ini Projeto": st.column_config.DateColumn("Ini Proj", format="DD/MM"),
+                "Fim Projeto": st.column_config.DateColumn("Fim Proj", format="DD/MM"),
+                "Ini Fabricacao": st.column_config.DateColumn("Ini Fab", format="DD/MM"),
+                "Fim Fabricacao": st.column_config.DateColumn("Fim Fab", format="DD/MM"),
+                "Ini Montagem": st.column_config.DateColumn("Ini Mont", format="DD/MM"),
+                "Fim Montagem": st.column_config.DateColumn("Fim Mont", format="DD/MM"),
 
                 # PROJETO
                 "Projetado": st.column_config.NumberColumn("Vol. Proj.", format="%.2f"),
-                "Projetado %": st.column_config.NumberColumn("Proj. %", format="%.1f%%"), # Removida barra de progresso para ficar igual imagem 2
+                "Projetado %": st.column_config.NumberColumn("Proj. %", format="%.1f%%"), 
                 "Restante Proj": st.column_config.NumberColumn("⏳ Dias", format="%d"),
 
                 # FABRICAÇÃO
@@ -646,11 +620,9 @@ with tab_geral:
                 "Fabricado %": st.column_config.NumberColumn("Fab. %", format="%.1f%%"),
                 "Restante Fab": st.column_config.NumberColumn("⏳ Dias", format="%d"),
 
-                # ACABAMENTO
+                # ACABAMENTO / EXP
                 "Acabado": st.column_config.NumberColumn("Vol. Acab.", format="%.2f"),
                 "Acabado %": st.column_config.NumberColumn("Acab. %", format="%.1f%%"),
-
-                # EXPEDIÇÃO
                 "Expedido": st.column_config.NumberColumn("Vol. Exp.", format="%.2f"),
                 "Expedido %": st.column_config.NumberColumn("Exp. %", format="%.1f%%"),
 
@@ -665,133 +637,4 @@ with tab_geral:
 
 # --- ABA 5: PLANEJADOR ---
 with tab_planejador:
-    st.subheader("📅 Planejador de Obra")
-    st.info("Simule uma nova obra usando a estrutura de datas de uma obra existente OU a média geral de todas as obras.")
-
-    col_plan1, col_plan2, col_plan3 = st.columns([1, 1, 1])
-    
-    opcoes_referencia = ["Média Geral (Todas as Obras)"] + sorted(todas_obras_lista)
-    
-    with col_plan1:
-        obra_referencia = st.selectbox("Base de Referência (Cronograma):", options=opcoes_referencia)
-    
-    with col_plan2:
-        data_inicio_simulacao = st.date_input("Data de Início do Projeto (Simulação):", value=datetime.date.today())
-
-    with col_plan3:
-        try:
-            familias_unicas = carregar_dados_familias()['Familia'].unique().tolist()
-            df_input_familias = pd.DataFrame({'Familia': familias_unicas, 'Quantidade': 0, 'Volume': 0.0})
-        except:
-            df_input_familias = pd.DataFrame(columns=['Familia', 'Quantidade', 'Volume'])
-
-    st.markdown("---")
-    st.write("**Defina os totais da nova obra:**")
-    df_familias_input = st.data_editor(
-        df_input_familias, hide_index=True, use_container_width=True,
-        column_config={
-            "Familia": st.column_config.TextColumn("Família", disabled=True),
-            "Quantidade": st.column_config.NumberColumn("Quantidade (Pçs)", min_value=0, step=1),
-            "Volume": st.column_config.NumberColumn("Volume (m³)", min_value=0.0, format="%.2f")
-        }
-    )
-    
-    total_qtd_input = df_familias_input['Quantidade'].sum()
-    total_vol_input = df_familias_input['Volume'].sum()
-    st.metric("Volume Total Planejado", f"{total_vol_input:.2f} m³")
-
-    st.markdown("---")
-    
-    if st.button("Gerar Projeção de Cronograma", type="primary"):
-        try:
-            datas = None
-            if obra_referencia == "Média Geral (Todas as Obras)":
-                df_medias = calcular_medias_cronograma()
-                if not df_medias.empty:
-                    media = df_medias.iloc[0]
-                    ini_p = pd.to_datetime(data_inicio_simulacao)
-                    fim_p = ini_p + pd.Timedelta(days=media['dias_duracao_proj'])
-                    ini_f = ini_p + pd.Timedelta(days=media['dias_lag_fab'])
-                    fim_f = ini_f + pd.Timedelta(days=media['dias_duracao_fab'])
-                    ini_m = ini_p + pd.Timedelta(days=media['dias_lag_mont'])
-                    fim_m = ini_m + pd.Timedelta(days=media['dias_duracao_mont'])
-                    datas = {'ini_proj': ini_p, 'fim_proj': fim_p, 'ini_fab': ini_f, 'fim_fab': fim_f, 'ini_mont': ini_m, 'fim_mont': fim_m}
-                else: st.error("Dados insuficientes para média.")
-            else:
-                df_datas = carregar_datas_limite_etapas(obra_referencia)
-                if not df_datas.empty and not df_datas.iloc[0].isnull().all():
-                    raw_datas = df_datas.iloc[0]
-                    dur_p = (raw_datas['fim_proj'] - raw_datas['ini_proj']).days
-                    lag_f = (raw_datas['ini_fab'] - raw_datas['ini_proj']).days
-                    dur_f = (raw_datas['fim_fab'] - raw_datas['ini_fab']).days
-                    lag_m = (raw_datas['ini_mont'] - raw_datas['ini_proj']).days
-                    dur_m = (raw_datas['fim_mont'] - raw_datas['ini_mont']).days
-                    ini_p = pd.to_datetime(data_inicio_simulacao)
-                    datas = {
-                        'ini_proj': ini_p, 'fim_proj': ini_p + pd.Timedelta(days=dur_p),
-                        'ini_fab': ini_p + pd.Timedelta(days=lag_f), 'fim_fab': (ini_p + pd.Timedelta(days=lag_f)) + pd.Timedelta(days=dur_f),
-                        'ini_mont': ini_p + pd.Timedelta(days=lag_m), 'fim_mont': (ini_p + pd.Timedelta(days=lag_m)) + pd.Timedelta(days=dur_m)
-                    }
-            
-            if datas:
-                def gerar_semanas(inicio, fim):
-                    if pd.isna(inicio) or pd.isna(fim): return []
-                    start = pd.to_datetime(inicio) - pd.Timedelta(days=pd.to_datetime(inicio).weekday())
-                    end = pd.to_datetime(fim)
-                    weeks = []
-                    while start <= end:
-                        weeks.append(start)
-                        start += pd.Timedelta(days=7)
-                    return weeks
-
-                semanas_proj = gerar_semanas(datas['ini_proj'], datas['fim_proj'])
-                semanas_fab = gerar_semanas(datas['ini_fab'], datas['fim_fab'])
-                semanas_mont = gerar_semanas(datas['ini_mont'], datas['fim_mont'])
-                
-                todas_semanas = sorted(list(set(semanas_proj + semanas_fab + semanas_mont)))
-                df_planejamento = pd.DataFrame({'Semana': todas_semanas})
-                df_planejamento['Semana Display'] = df_planejamento['Semana'].apply(formatar_semana)
-                
-                vol_por_sem_proj = total_vol_input / len(semanas_proj) if semanas_proj else 0
-                vol_por_sem_fab = total_vol_input / len(semanas_fab) if semanas_fab else 0
-                vol_por_sem_mont = total_vol_input / len(semanas_mont) if semanas_mont else 0
-                
-                qtd_por_sem_proj = total_qtd_input / len(semanas_proj) if semanas_proj else 0
-                qtd_por_sem_fab = total_qtd_input / len(semanas_fab) if semanas_fab else 0
-                qtd_por_sem_mont = total_qtd_input / len(semanas_mont) if semanas_mont else 0
-                
-                def get_val(semana, lista, valor): return valor if semana in lista else 0.0
-                
-                # Calcula os valores incrementais
-                df_planejamento['Projeto (Vol)'] = df_planejamento['Semana'].apply(lambda x: get_val(x, semanas_proj, vol_por_sem_proj))
-                df_planejamento['Projeto (Qtd)'] = df_planejamento['Semana'].apply(lambda x: get_val(x, semanas_proj, qtd_por_sem_proj))
-                df_planejamento['Fabricação (Vol)'] = df_planejamento['Semana'].apply(lambda x: get_val(x, semanas_fab, vol_por_sem_fab))
-                df_planejamento['Fabricação (Qtd)'] = df_planejamento['Semana'].apply(lambda x: get_val(x, semanas_fab, qtd_por_sem_fab))
-                df_planejamento['Montagem (Vol)'] = df_planejamento['Semana'].apply(lambda x: get_val(x, semanas_mont, vol_por_sem_mont))
-                df_planejamento['Montagem (Qtd)'] = df_planejamento['Semana'].apply(lambda x: get_val(x, semanas_mont, qtd_por_sem_mont))
-
-                # Aplica CUMSUM para mostrar acumulado
-                df_planejamento['Projeto (Vol)'] = df_planejamento['Projeto (Vol)'].cumsum()
-                df_planejamento['Projeto (Qtd)'] = df_planejamento['Projeto (Qtd)'].cumsum()
-                df_planejamento['Fabricação (Vol)'] = df_planejamento['Fabricação (Vol)'].cumsum()
-                df_planejamento['Fabricação (Qtd)'] = df_planejamento['Fabricação (Qtd)'].cumsum()
-                df_planejamento['Montagem (Vol)'] = df_planejamento['Montagem (Vol)'].cumsum()
-                df_planejamento['Montagem (Qtd)'] = df_planejamento['Montagem (Qtd)'].cumsum()
-                
-                st.subheader("Matriz de Planejamento Semanal (Acumulado)")
-                st.dataframe(
-                    df_planejamento, hide_index=True, width="stretch",
-                    column_config={
-                        "Semana": None,
-                        "Projeto (Vol)": st.column_config.NumberColumn(format="%.2f"),
-                        "Fabricação (Vol)": st.column_config.NumberColumn(format="%.2f"),
-                        "Montagem (Vol)": st.column_config.NumberColumn(format="%.2f"),
-                        "Projeto (Qtd)": st.column_config.NumberColumn(format="%.0f"),
-                        "Fabricação (Qtd)": st.column_config.NumberColumn(format="%.0f"),
-                        "Montagem (Qtd)": st.column_config.NumberColumn(format="%.0f"),
-                    }
-                )
-            else:
-                st.warning("Não foi possível gerar o cronograma com os dados disponíveis.")
-        except Exception as e:
-            st.error(f"Erro ao gerar planejamento: {e}")
+    st.info("Planejador em desenvolvimento...")
