@@ -165,14 +165,15 @@ def carregar_dados_usuario():
     try:
         df_orcamentos_salvos = pd.read_sql("SELECT * FROM orcamentos_usuario", con=engine)
     except:
-        st.info("Nota: Tabela 'orcamentos_usuario' será criada ao salvar.")
+        # Tabela ainda não existe, será criada depois
+        pass
     
     try:
         df_previsoes_salvas = pd.read_sql("SELECT * FROM previsoes_usuario", con=engine)
         if not df_previsoes_salvas.empty:
             df_previsoes_salvas['Semana'] = pd.to_datetime(df_previsoes_salvas['Semana'])
     except:
-        st.info("Nota: Tabela 'previsoes_usuario' será criada ao salvar.")
+        pass
 
     engine.dispose()
     return df_orcamentos_salvos, df_previsoes_salvas
@@ -232,7 +233,7 @@ if 'orcamentos' not in st.session_state:
     df_orcamentos_para_editor = df_orcamentos_base.merge(df_orcamentos_salvos, on="Obra", how="left")
     st.session_state['orcamentos'] = df_orcamentos_para_editor
 
-# --- LIMPEZA DE COLUNAS ANTIGAS (CRUCIAL PARA REMOVER AS COLUNAS INDESEJADAS) ---
+# --- LIMPEZA DE COLUNAS ANTIGAS ---
 cols_remover = ["Prazo Projeto", "Prazo Fabricacao", "Prazo Montagem", "Data Inicio"]
 st.session_state['orcamentos'] = st.session_state['orcamentos'].drop(
     columns=[c for c in cols_remover if c in st.session_state['orcamentos'].columns], 
@@ -313,26 +314,73 @@ tab_cadastro, tab_tabelas, tab_graficos, tab_geral, tab_planejador = st.tabs([
     "📁 Cadastro", "📊 Tabelas", "📈 Gráficos", "🌍 Tabela Geral", "📅 Planejador"
 ])
 
-streamlit.errors.StreamlitInvalidWidthError: This app has encountered an error. The original error message is redacted to prevent data leaks. Full error details have been recorded in the logs (if you're on Streamlit Cloud, click on 'Manage app' in the lower right of your app).
+# --- ABA 1: CADASTRO (COM CORREÇÃO DE WIDTH E CALLBACK) ---
+with tab_cadastro:
+    st.subheader("💰 1. Orçamento e Datas das Etapas")
+    st.info("Cadastre o orçamento e as datas de **Início e Fim** de cada etapa.")
+    
+    # 1. Copia e filtra os dados da memória
+    orcamentos_filtrado = st.session_state['orcamentos'][st.session_state['orcamentos']['Obra'].isin(obras_selecionadas)].copy()
+    
+    # 2. Conversão de tipos (Blindagem)
+    for col in cols_datas_necessarias:
+        if col not in orcamentos_filtrado.columns: orcamentos_filtrado[col] = None
+        orcamentos_filtrado[col] = pd.to_datetime(orcamentos_filtrado[col], errors='coerce')
 
-Traceback:
-File "/mount/src/reuni-o-de-prazos/apresentacao copy.py", line 353, in <module>
+    # --- CALLBACK DE SALVAMENTO AUTOMÁTICO ---
+    def atualizar_session_state():
+        edits = st.session_state["editor_cadastro"]
+        if edits["edited_rows"]:
+            for index, changes in edits["edited_rows"].items():
+                # Recupera o índice real
+                real_index = orcamentos_filtrado.index[index]
+                # Aplica mudanças
+                for col_name, new_value in changes.items():
+                    st.session_state['orcamentos'].at[real_index, col_name] = new_value
+
+    # 3. O Editor de Dados
     st.data_editor(
-    ~~~~~~~~~~~~~~^
-        orcamentos_filtrado,
-        ^^^^^^^^^^^^^^^^^^^^
-    ...<23 lines>...
+        orcamentos_filtrado, 
+        key="editor_cadastro", # Chave para o callback
+        on_change=atualizar_session_state, # Ativa o salvamento imediato
+        hide_index=True, 
+        use_container_width=True, # Substitui o width=None
+        disabled=["Obra"], 
+        column_config={
+            "Obra": st.column_config.TextColumn("Obra", disabled=True),
+            "Orcamento": st.column_config.NumberColumn("Orçamento (Vol)", min_value=0.01, format="%.2f"),
+            "Orcamento Lajes": st.column_config.NumberColumn("Orç. Lajes", min_value=0.00, format="%.2f"),
+            
+            # DATAS POR ETAPA (INICIO E FIM)
+            "Ini Projeto": st.column_config.DateColumn("Ini Proj.", format="DD/MM/YYYY"),
+            "Fim Projeto": st.column_config.DateColumn("Fim Proj.", format="DD/MM/YYYY"),
+            
+            "Ini Fabricacao": st.column_config.DateColumn("Ini Fab.", format="DD/MM/YYYY"),
+            "Fim Fabricacao": st.column_config.DateColumn("Fim Fab.", format="DD/MM/YYYY"),
+            
+            "Ini Montagem": st.column_config.DateColumn("Ini Mont.", format="DD/MM/YYYY"),
+            "Fim Montagem": st.column_config.DateColumn("Fim Mont.", format="DD/MM/YYYY"),
+            
+            # Ocultar
+            "Data Inicio": None
         }
-        ^
     )
-    ^
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/runtime/metrics_util.py", line 531, in wrapped_func
-    result = non_optional_func(*args, **kwargs)
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/widgets/data_editor.py", line 936, in data_editor
-    validate_width(width, allow_content=True)
-    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
-File "/home/adminuser/venv/lib/python3.13/site-packages/streamlit/elements/lib/layout_utils.py", line 77, in validate_width
-    raise StreamlitInvalidWidthError(width, allow_content)
+    
+    # Botão de Salvar apenas para o Banco de Dados
+    if st.button("💾 Salvar Cadastro no Banco de Dados", key="btn_salvar_cadastro"):
+        salvar_dados_usuario(df_previsoes_salvas, st.session_state['orcamentos'])
+
+# --- 6. MERGE FINAL ---
+df_orcamentos_atual = st.session_state['orcamentos']
+df = df.merge(df_orcamentos_atual, on="Obra", how="left")
+for col in ["Projetado", "Fabricado", "Montado"]:
+    df[f"{col} %"] = (df[f"Volume_{col}"] / df["Orcamento"]) * 100
+
+if not df_previsoes_salvas.empty:
+    df = df.merge(df_previsoes_salvas, on=["Obra", "Semana"], how="left")
+for col in ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]:
+    df[col] = df[col].fillna(0.0)
+df_para_edicao = df.copy() 
 
 # --- ABA 2: TABELAS ---
 with tab_tabelas:
@@ -344,12 +392,12 @@ with tab_tabelas:
     df_editado = df_para_edicao 
     if show_editor:
         st.markdown("---")
-        st.subheader("✏️ 2. Edite as Previsões")
+        st.subheader("✏️ 2. Edite as Previsões Semanais")
         # Esconde colunas que não são de previsão
         cols_ocultar = ["Obra", "Semana", "Semana_Display", "Volume_Projetado", "Projetado %", "Volume_Fabricado", "Fabricado %", "Volume_Montado", "Montado %", "Orcamento", "Orcamento Lajes"] + cols_datas_necessarias
         
         df_editado = st.data_editor(
-            df_para_edicao, key="dados_editor", width="stretch", hide_index=True, disabled=cols_ocultar,
+            df_para_edicao, key="dados_editor", use_container_width=True, hide_index=True, disabled=cols_ocultar,
             column_config={
                 "Semana_Display": "Semana", 
                 "Projeto Previsto %": st.column_config.NumberColumn(format="%.0f%%"),
@@ -367,13 +415,12 @@ with tab_tabelas:
         mask_concluido = df_calculado.groupby('Obra')[col].shift(1) >= 100.0
         df_calculado.loc[mask_concluido, col] = np.nan
 
-    if st.button("💾 Salvar Alterações no Banco de Dados", type="primary"):
-        # Salva o dataframe de previsões e o de orçamentos (limpo)
+    if st.button("💾 Salvar Previsões no Banco de Dados", type="primary"):
         salvar_dados_usuario(df_editado, st.session_state['orcamentos'])
 
     if show_result_table:
         cols_res = ["Obra", "Semana_Display", "Projetado %", "Projeto Previsto %", "Fabricado %", "Fabricação Prevista %", "Montado %", "Montagem Prevista %"]
-        st.dataframe(df_calculado[[c for c in cols_res if c in df_calculado.columns]], width="stretch", hide_index=True)
+        st.dataframe(df_calculado[[c for c in cols_res if c in df_calculado.columns]], use_container_width=True, hide_index=True)
 
 # --- ABA 3: GRÁFICOS ---
 with tab_graficos:
@@ -438,7 +485,7 @@ with tab_geral:
         cols_final = [c for c in colunas_ordenadas if c in df_geral.columns]
 
         st.dataframe(
-            df_geral[cols_final], width="stretch", hide_index=True,
+            df_geral[cols_final], use_container_width=True, hide_index=True,
             column_config={
                 "Orcamento": st.column_config.NumberColumn("Orçamento", format="%.2f"),
                 "Orcamento Lajes": st.column_config.NumberColumn("Orç. Lajes", format="%.2f"),
@@ -567,7 +614,7 @@ with tab_planejador:
                 df_plan['Montagem (Vol)'] = df_plan['Semana'].apply(lambda x: vm if x in semanas_mont else 0).cumsum()
                 
                 st.subheader("Simulação de Avanço Acumulado")
-                st.dataframe(df_plan, hide_index=True, width="stretch")
+                st.dataframe(df_plan, use_container_width=True, hide_index=True)
             else:
                 st.warning("Não foi possível gerar cronograma.")
         except Exception as e:
