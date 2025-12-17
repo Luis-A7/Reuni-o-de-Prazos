@@ -261,22 +261,29 @@ df['Semana_Display'] = df['Semana'].apply(formatar_semana)
 # --- 5. ABAS ---
 tab_cadastro, tab_tabelas, tab_graficos, tab_geral = st.tabs(["📁 Cadastro", "📊 Tabelas", "📈 Gráficos", "🌍 Tabela Geral"])
 
-# --- ABA 1: CADASTRO (DATA INICIO REMOVIDA, APENAS ETAPAS) ---
+# --- ABA 1: CADASTRO (CORRIGIDO PARA NÃO PERDER DADOS) ---
 with tab_cadastro:
     st.subheader("💰 1. Orçamento e Datas das Etapas")
     st.info("Cadastre o orçamento e as datas de **Início e Fim** de cada etapa.")
     
+    # 1. Copia e filtra os dados da memória
+    # Importante: Mantemos o índice original para conseguir salvar depois
     orcamentos_filtrado = st.session_state['orcamentos'][st.session_state['orcamentos']['Obra'].isin(obras_selecionadas)].copy()
     
-    # Conversão de tipos para evitar erro do editor
+    # 2. Conversão de tipos (Blindagem)
+    # Garante que as colunas de data existam e sejam datetime antes de entrar no editor
     cols_datas = ["Ini Projeto", "Fim Projeto", "Ini Fabricacao", "Fim Fabricacao", "Ini Montagem", "Fim Montagem"]
     for col in cols_datas:
         if col not in orcamentos_filtrado.columns: orcamentos_filtrado[col] = None
         orcamentos_filtrado[col] = pd.to_datetime(orcamentos_filtrado[col], errors='coerce')
 
+    # 3. O Editor de Dados
     df_orcamentos_editado = st.data_editor(
         orcamentos_filtrado, 
-        key="orcamento_editor", hide_index=True, width="stretch", disabled=["Obra"], 
+        key="orcamento_editor", 
+        hide_index=True, 
+        width="stretch", 
+        disabled=["Obra"], 
         column_config={
             "Orcamento": st.column_config.NumberColumn("Orçamento (Vol)", min_value=0.01, format="%.2f"),
             "Orcamento Lajes": st.column_config.NumberColumn("Orç. Lajes", min_value=0.00, format="%.2f"),
@@ -291,11 +298,19 @@ with tab_cadastro:
             "Ini Montagem": st.column_config.DateColumn("Ini Mont.", format="DD/MM/YYYY"),
             "Fim Montagem": st.column_config.DateColumn("Fim Mont.", format="DD/MM/YYYY"),
             
-            # REMOVE QUALQUER COLUNA 'DATA INICIO' GENÉRICA QUE EXISTA
+            # Ocultar Data Inicio Genérica se existir
             "Data Inicio": None
         }
     )
-    st.session_state['orcamentos'].update(df_orcamentos_editado)
+    
+    # --- A CORREÇÃO MÁGICA ---
+    # Em vez de .update(), usamos .loc para FORÇAR a gravação dos dados editados na memória
+    # Isso sobrescreve exatamente as linhas e colunas que estão na tela, sem falhas.
+    if not df_orcamentos_editado.empty:
+        st.session_state['orcamentos'].loc[
+            df_orcamentos_editado.index, 
+            df_orcamentos_editado.columns
+        ] = df_orcamentos_editado
 
 # --- 6. MERGE FINAL ---
 df_orcamentos_atual = st.session_state['orcamentos']
