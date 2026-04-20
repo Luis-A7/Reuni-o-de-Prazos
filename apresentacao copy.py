@@ -7,6 +7,36 @@ import datetime
 import numpy as np
 import requests
 
+PREVISAO_COLUNAS = ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]
+PREVISAO_ALIASES = {
+    "Projeto Previsto %": ["Projeto Previsto %", "Projeto Previsto", "Projeto_previsto_pct"],
+    "Fabricação Prevista %": ["Fabricação Prevista %", "Fabricacao Prevista %", "FabricaÃ§Ã£o Prevista %"],
+    "Montagem Prevista %": ["Montagem Prevista %", "Montagem Prevista", "Montagem_prevista_pct"],
+}
+
+
+def normalizar_colunas_previsao(df):
+    if df is None:
+        return pd.DataFrame(columns=["Obra", "Semana"] + PREVISAO_COLUNAS)
+
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+
+    for canonical, aliases in PREVISAO_ALIASES.items():
+        serie = pd.Series(np.nan, index=df.index, dtype=float)
+        for alias in aliases:
+            if alias in df.columns:
+                serie = serie.fillna(pd.to_numeric(df.get(alias), errors='coerce'))
+        df[canonical] = serie.fillna(0.0)
+
+    cols_legacy = []
+    for canonical, aliases in PREVISAO_ALIASES.items():
+        cols_legacy.extend([a for a in aliases if a != canonical and a in df.columns])
+    if cols_legacy:
+        df = df.drop(columns=list(dict.fromkeys(cols_legacy)), errors='ignore')
+
+    return df
+
 # ========================================================
 #           CONFIGURAÇÕES DO BANCO DE DADOS
 # ========================================================
@@ -162,7 +192,7 @@ def calcular_medias_cronograma():
 def carregar_dados_usuario():
     engine = create_engine(DB_URL)
     df_orcamentos_salvos = pd.DataFrame(columns=["Obra", "Orcamento", "Orcamento Lajes"])
-    df_previsoes_salvas = pd.DataFrame(columns=["Obra", "Semana", "Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"])
+    df_previsoes_salvas = pd.DataFrame(columns=["Obra", "Semana"] + PREVISAO_COLUNAS)
 
     try:
         df_orcamentos_salvos = pd.read_sql("SELECT * FROM orcamentos_usuario", con=engine)
@@ -171,6 +201,7 @@ def carregar_dados_usuario():
     
     try:
         df_previsoes_salvas = pd.read_sql("SELECT * FROM previsoes_usuario", con=engine)
+        df_previsoes_salvas = normalizar_colunas_previsao(df_previsoes_salvas)
         if not df_previsoes_salvas.empty:
             df_previsoes_salvas['Semana'] = pd.to_datetime(df_previsoes_salvas['Semana'])
     except:
@@ -225,6 +256,7 @@ def carregar_war_room_week():
 def salvar_dados_usuario(df_previsoes, df_orcamentos):
     engine = create_engine(DB_URL)
     try:
+        df_previsoes = normalizar_colunas_previsao(df_previsoes)
         df_previsoes_limpo = df_previsoes.dropna(subset=['Obra', 'Semana'])
         df_save_previsoes = df_previsoes_limpo[[
             "Obra", "Semana", "Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"
@@ -399,8 +431,7 @@ for col in ["Projetado", "Fabricado", "Montado"]:
 
 if not df_previsoes_salvas.empty:
     df = df.merge(df_previsoes_salvas, on=["Obra", "Semana"], how="left")
-for col in ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]:
-    df[col] = df[col].fillna(0.0)
+df = normalizar_colunas_previsao(df)
 df_para_edicao = df.copy() 
 
 # --- ABA 2: TABELAS ---
@@ -428,7 +459,7 @@ with tab_tabelas:
         st.markdown("---")
 
     df_calculado = df_editado.copy().sort_values(['Obra', 'Semana'])
-    for col in ["Projeto Previsto %", "Fabricação Prevista %", "Montagem Prevista %"]:
+    for col in PREVISAO_COLUNAS:
         df_calculado[col] = df_calculado[col].replace(0.0, np.nan)
         df_calculado[col] = df_calculado.groupby('Obra')[col].ffill().fillna(0.0)
         mask_concluido = df_calculado.groupby('Obra')[col].shift(1) >= 100.0
